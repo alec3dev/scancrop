@@ -9,8 +9,8 @@
     h1{font-size:18px;margin:0 0 8px}
     .row{display:flex;gap:12px;flex-wrap:wrap}
     video,canvas{border-radius:6px;border:1px solid #ccc}
-    #controls{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
-    button{padding:8px 10px;border-radius:6px;border:1px solid #888;background:#f5f5f5;cursor:pointer}
+    #controls{display:flex;gap:8px;align-items:center;margin:8px 0}
+    button,input[type=file]{padding:8px 10px;border-radius:6px;border:1px solid #888;background:#f5f5f5;cursor:pointer}
     #thumbs{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
     .thumb{display:flex;flex-direction:column;align-items:center;padding:6px;border:1px solid #ddd;border-radius:6px;background:#fff}
     .thumb img{max-width:200px;max-height:160px;display:block;margin-bottom:6px}
@@ -21,7 +21,7 @@
 </head>
 <body>
   <h1>Batch Document / Photo Scanner — single HTML file</h1>
-  <p>Point your camera at a group of rectangular papers/photos on a common background or upload an existing image. Capture one photo or upload, then press <strong>Process</strong> to detect, extract and download each rectangle.</p>
+  <p>Use your camera or upload an existing image. Capture one photo, then press <strong>Process</strong> to detect, extract and download each rectangle.</p>
 
   <div class="row">
     <video id="video" width="480" height="360" autoplay playsinline></video>
@@ -40,7 +40,7 @@
 
   <div id="thumbs"></div>
 
-  <script async src="https://docs.opencv.org/4.x/opencv.js" type="text/javascript"></script>
+  <script src="https://docs.opencv.org/4.x/opencv.js"></script>
   <script>
     let cvReady = false;
     let video = document.getElementById('video');
@@ -58,17 +58,15 @@
     const minArea = document.getElementById('minArea');
     const eps = document.getElementById('eps');
 
-    function setStatus(s){ }
-
-    function onOpenCvReady(){
+    // OpenCV runtime ready
+    cv['onRuntimeInitialized'] = () => {
       cvReady = true;
       console.log('OpenCV loaded');
-    }
-    window.onOpenCvReady = onOpenCvReady;
+    };
 
     btnStart.onclick = async ()=>{
       try{
-        if(stream) {
+        if(stream) { // stop
           stream.getTracks().forEach(t=>t.stop());
           stream = null;
           video.srcObject = null;
@@ -95,20 +93,25 @@
       thumbs.innerHTML = '';
     }
 
-    fileInput.onchange = (e)=>{
+    // load image from file
+    fileInput.onchange = e=>{
+      if(!e.target.files.length) return;
       const file = e.target.files[0];
-      if(!file) return;
-      const img = new Image();
-      img.onload = ()=>{
-        canvasPreview.width = img.width;
-        canvasPreview.height = img.height;
-        ctx.drawImage(img,0,0);
-        lastImage = ctx.getImageData(0,0,canvasPreview.width,canvasPreview.height);
-        btnProcess.disabled = false;
-        thumbs.innerHTML = '';
-      }
-      img.src = URL.createObjectURL(file);
-    }
+      const reader = new FileReader();
+      reader.onload = function(ev){
+        const img = new Image();
+        img.onload = ()=>{
+          canvasPreview.width = img.width;
+          canvasPreview.height = img.height;
+          ctx.drawImage(img,0,0);
+          lastImage = ctx.getImageData(0,0,canvasPreview.width,canvasPreview.height);
+          btnProcess.disabled = false;
+          thumbs.innerHTML = '';
+        };
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+    };
 
     btnClear.onclick = ()=>{
       thumbs.innerHTML = '';
@@ -130,6 +133,19 @@
       });
     }
 
+    function distance(a,b){let dx=a.x-b.x,dy=a.y-b.y;return Math.sqrt(dx*dx+dy*dy);}
+    function indexOfMin(arr){return arr.indexOf(Math.min.apply(null,arr));}
+    function indexOfMax(arr){return arr.indexOf(Math.max.apply(null,arr));}
+    function orderQuadPoints(pts){
+      let sum = pts.map(p=>p.x+p.y);
+      let diff = pts.map(p=>p.y - p.x);
+      let tl = pts[indexOfMin(sum)];
+      let br = pts[indexOfMax(sum)];
+      let tr = pts[indexOfMin(diff)];
+      let bl = pts[indexOfMax(diff)];
+      return [tl,tr,br,bl];
+    }
+
     function processImage(){
       let src = cv.matFromImageData(lastImage);
       let gray = new cv.Mat();
@@ -138,10 +154,9 @@
       cv.GaussianBlur(gray, blur, new cv.Size(5,5), 0);
       let edged = new cv.Mat();
       cv.Canny(blur, edged, 50, 150);
-
       let kernel = cv.Mat.ones(3,3,cv.CV_8U);
-      cv.dilate(edged, edged, kernel, new cv.Point(-1,-1), 1);
-      cv.erode(edged, edged, kernel, new cv.Point(-1,-1), 1);
+      cv.dilate(edged, edged, kernel);
+      cv.erode(edged, edged, kernel);
 
       let contours = new cv.MatVector();
       let hierarchy = new cv.Mat();
@@ -164,21 +179,17 @@
           for(let j=0;j<4;j++){
             pts.push({x: approx.intPtr(j,0)[0], y: approx.intPtr(j,0)[1]});
           }
-          found.push({contour:cnt, approx:approx, area:area, centroid:{x:cx,y:cy}, pts:pts});
-        } else {
-          approx.delete();
-          cnt.delete();
-        }
+          found.push({contour:cnt, approx:approx, centroid:{x:cx,y:cy}, pts:pts});
+        } else { approx.delete(); cnt.delete(); }
       }
 
-      if(found.length === 0){
-        alert('No rectangles found. Try reducing min area or increasing epsilon.');
-        src.delete(); gray.delete(); blur.delete(); edged.delete(); contours.delete(); hierarchy.delete(); kernel.delete();
+      if(found.length===0){
+        alert('No rectangles found. Adjust sliders and try again.');
+        src.delete();gray.delete();blur.delete();edged.delete();contours.delete();hierarchy.delete();kernel.delete();
         return;
       }
 
       sortContoursByPosition(found);
-
       thumbs.innerHTML = '';
 
       for(let k=0;k<found.length;k++){
@@ -194,10 +205,10 @@
         maxH = Math.max(100, Math.round(maxH));
 
         let srcTri = cv.matFromArray(4,1,cv.CV_32FC2,[
-          ordered[0].x, ordered[0].y,
-          ordered[1].x, ordered[1].y,
-          ordered[2].x, ordered[2].y,
-          ordered[3].x, ordered[3].y
+          ordered[0].x,ordered[0].y,
+          ordered[1].x,ordered[1].y,
+          ordered[2].x,ordered[2].y,
+          ordered[3].x,ordered[3].y
         ]);
         let dstTri = cv.matFromArray(4,1,cv.CV_32FC2,[
           0,0,
@@ -205,54 +216,34 @@
           maxW-1,maxH-1,
           0,maxH-1
         ]);
-
-        let M = cv.getPerspectiveTransform(srcTri, dstTri);
+        let M = cv.getPerspectiveTransform(srcTri,dstTri);
         let dst = new cv.Mat();
-        let dsize = new cv.Size(maxW, maxH);
-        cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_REPLICATE);
+        cv.warpPerspective(src,dst,M,new cv.Size(maxW,maxH),cv.INTER_LINEAR,cv.BORDER_REPLICATE);
 
-        let outCanvas = document.createElement('canvas');
-        outCanvas.width = dst.cols; outCanvas.height = dst.rows;
-        let outCtx = outCanvas.getContext('2d');
-        let img = new ImageData(new Uint8ClampedArray(dst.data), dst.cols, dst.rows);
+        let outCanvas=document.createElement('canvas');
+        outCanvas.width=dst.cols;outCanvas.height=dst.rows;
+        let outCtx=outCanvas.getContext('2d');
+        let img=new ImageData(new Uint8ClampedArray(dst.data),dst.cols,dst.rows);
         outCtx.putImageData(img,0,0);
 
-        let wrapper = document.createElement('div'); wrapper.className='thumb';
-        let imgEl = document.createElement('img');
-        imgEl.src = outCanvas.toDataURL('image/jpeg', 0.9);
+        let wrapper=document.createElement('div');wrapper.className='thumb';
+        let imgEl=document.createElement('img');imgEl.src=outCanvas.toDataURL('image/jpeg',0.9);
         wrapper.appendChild(imgEl);
 
-        let dl = document.createElement('a');
-        dl.href = imgEl.src; dl.download = `scan_${k+1}.jpg`;
-        dl.textContent = 'Download';
-        dl.style.marginBottom = '6px';
+        let dl=document.createElement('a');
+        dl.href=imgEl.src;dl.download=`scan_${k+1}.jpg`;
+        dl.textContent='Download';
+        dl.style.marginBottom='6px';
         wrapper.appendChild(dl);
 
         thumbs.appendChild(wrapper);
 
-        M.delete(); dst.delete(); srcTri.delete(); dstTri.delete();
+        M.delete();dst.delete();srcTri.delete();dstTri.delete();
       }
 
-      src.delete(); gray.delete(); blur.delete(); edged.delete(); contours.delete(); hierarchy.delete(); kernel.delete();
-      for(let f of found){ try{ f.contour.delete(); f.approx.delete(); } catch(e){} }
+      src.delete();gray.delete();blur.delete();edged.delete();contours.delete();hierarchy.delete();kernel.delete();
+      for(let f of found){try{f.contour.delete();f.approx.delete();}catch(e){}}
     }
-
-    function distance(a,b){
-      let dx = a.x-b.x, dy = a.y-b.y; return Math.sqrt(dx*dx+dy*dy);
-    }
-
-    function orderQuadPoints(pts){
-      let sum = pts.map(p=>p.x+p.y);
-      let diff = pts.map(p=>p.y - p.x);
-      let tl = pts[indexOfMin(sum)];
-      let br = pts[indexOfMax(sum)];
-      let tr = pts[indexOfMin(diff)];
-      let bl = pts[indexOfMax(diff)];
-      return [tl,tr,br,bl];
-    }
-    function indexOfMin(arr){return arr.indexOf(Math.min.apply(null,arr));}
-    function indexOfMax(arr){return arr.indexOf(Math.max.apply(null,arr));}
-
   </script>
 </body>
 </html>
