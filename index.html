@@ -11,16 +11,15 @@
   video,canvas{border:1px solid #ccc;border-radius:6px}
   #controls{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
   button,input[type=file]{padding:6px;border:1px solid #888;border-radius:6px;background:#f5f5f5}
+  button:disabled{opacity:0.5}
   #thumbs{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
   .thumb{display:flex;flex-direction:column;align-items:center;padding:6px;border:1px solid #ddd;border-radius:6px;background:#fff}
   .thumb img{max-width:200px;max-height:160px;margin-bottom:4px}
-  label{font-size:12px;color:#444}
 </style>
 </head>
 <body>
 <h1>Extract Faces</h1>
 <p>Use camera or upload an image. Detected faces will appear with download links.</p>
-<div id="errorMessage" style="display:none"></div>
 
 <div class="row">
   <video id="video" width="480" height="360" autoplay playsinline></video>
@@ -36,30 +35,37 @@
 </div>
 
 <div id="thumbs"></div>
+<div id="errorMessage" style="display:none"></div>
 
 <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 <script>
+// Utils class to load files from URL (OpenCV example)
+class Utils {
+  constructor(errId) { this.errOutput = document.getElementById(errId); }
+  createFileFromUrl(path, url, callback) {
+    let request = new XMLHttpRequest();
+    request.open('GET', url, true);
+    request.responseType = 'arraybuffer';
+    request.onload = () => {
+      if (request.status === 200 || request.status === 0) {
+        let data = new Uint8Array(request.response);
+        cv.FS_createDataFile('/', path, data, true, false, false);
+        callback();
+      } else { console.log('Failed to load ' + url); }
+    };
+    request.send();
+  }
+}
+
 let cvReady=false;
-cv['onRuntimeInitialized'] = () => {
-  console.log('OpenCV ready');
-  const utils = new Utils('errorMessage');
-  window.faceCascade = new cv.CascadeClassifier();
-  utils.createFileFromUrl(
-    'haarcascade_frontalface_default.xml',
-    'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml',
-    () => {
-      faceCascade.load('haarcascade_frontalface_default.xml');
-      console.log('Face cascade loaded');
-      if (lastImage) btnProcess.disabled = false; // enable button if an image is ready
-    }
-  );
-};
+let cascadeReady=false;
+let faceCascade=null;
+let lastImage=null;
 
 const video=document.getElementById('video');
 const canvasPreview=document.getElementById('canvasPreview');
 const ctx=canvasPreview.getContext('2d');
 let stream=null;
-let lastImage=null;
 
 const btnStart=document.getElementById('btnStart');
 const btnCapture=document.getElementById('btnCapture');
@@ -68,93 +74,105 @@ const btnClear=document.getElementById('btnClear');
 const fileInput=document.getElementById('fileInput');
 const thumbs=document.getElementById('thumbs');
 
-btnStart.onclick=async()=>{
-  try{
+cv['onRuntimeInitialized'] = () => {
+  console.log('OpenCV ready');
+  cvReady = true;
+  // load face cascade
+  const utils = new Utils('errorMessage');
+  faceCascade = new cv.CascadeClassifier();
+  utils.createFileFromUrl(
+    'haarcascade_frontalface_default.xml',
+    'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml',
+    () => {
+      faceCascade.load('haarcascade_frontalface_default.xml');
+      console.log('Face cascade loaded');
+      cascadeReady = true;
+      if (lastImage) btnProcess.disabled = false;
+    }
+  );
+};
+
+// Camera start/stop
+btnStart.onclick = async () => {
+  try {
     if(stream){
       stream.getTracks().forEach(t=>t.stop());
       stream=null;video.srcObject=null;
-      btnStart.textContent='Start Camera';btnCapture.disabled=true;return;
+      btnStart.textContent='Start Camera';btnCapture.disabled=true;
+      return;
     }
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-    video.srcObject=stream;
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    video.srcObject = stream;
     btnStart.textContent='Stop Camera';btnCapture.disabled=false;
-  }catch(e){alert(e);}
+  } catch(e){ alert(e); }
 };
 
+// Capture frame
 btnCapture.onclick = () => {
   canvasPreview.width = video.videoWidth || 640;
   canvasPreview.height = video.videoHeight || 480;
-  ctx.drawImage(video, 0, 0, canvasPreview.width, canvasPreview.height);
-  lastImage = ctx.getImageData(0, 0, canvasPreview.width, canvasPreview.height);
-  if (faceCascade && faceCascade.empty() === false) btnProcess.disabled = false;
+  ctx.drawImage(video,0,0,canvasPreview.width,canvasPreview.height);
+  lastImage = ctx.getImageData(0,0,canvasPreview.width,canvasPreview.height);
+  if(cascadeReady) btnProcess.disabled = false;
   thumbs.innerHTML = '';
 };
 
+// Upload file
 fileInput.onchange = (e) => {
-  if (!e.target.files.length) return;
+  if(!e.target.files.length) return;
   let file = e.target.files[0];
   let img = new Image();
   img.onload = () => {
     canvasPreview.width = img.width;
     canvasPreview.height = img.height;
-    ctx.drawImage(img, 0, 0);
-    lastImage = ctx.getImageData(0, 0, img.width, img.height);
-    if (faceCascade && faceCascade.empty() === false) btnProcess.disabled = false;
+    ctx.drawImage(img,0,0);
+    lastImage = ctx.getImageData(0,0,img.width,img.height);
+    if(cascadeReady) btnProcess.disabled = false;
     thumbs.innerHTML = '';
   };
   img.src = URL.createObjectURL(file);
 };
 
+// Clear
+btnClear.onclick = () => { thumbs.innerHTML=''; lastImage=null; btnProcess.disabled=true; };
 
-btnClear.onclick=()=>{thumbs.innerHTML='';lastImage=null;btnProcess.disabled=true;};
-
-btnProcess.onclick=()=>{
-  if(!lastImage)return alert('Capture or upload first');
-  if(!cvReady)return alert('Wait for OpenCV to load');
+// Process button
+btnProcess.onclick = () => {
+  if(!lastImage) return alert('Capture or upload first');
+  if(!cvReady || !cascadeReady) return alert('Wait for OpenCV and cascade to load');
   detectFaces();
 };
 
-// Utils class to load files from URL (from OpenCV examples)
-class Utils{
-  constructor(errId){this.createFileFromUrl=this.createFileFromUrl.bind(this);this.errOutput=document.getElementById(errId);}
-  createFileFromUrl(path,url,onload){
-    let xhr=new XMLHttpRequest();xhr.open('GET',url,true);xhr.responseType='arraybuffer';
-    xhr.onload=()=>{
-      if(xhr.status===200||xhr.status===0){
-        let data=new Uint8Array(xhr.response);
-        cv.FS_createDataFile('/',path,true,false,false,data);
-        onload();
-      }else{console.log('Failed to load '+url);}
-    };xhr.send();
-  }
-}
-
+// Detect faces
 function detectFaces(){
-  let src=cv.matFromImageData(lastImage);
-  let gray=new cv.Mat();
-  cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
-  let faces=new cv.RectVector();
-  let msize=new cv.Size(0,0);
-  faceCascade.detectMultiScale(gray,faces,1.1,3,0,msize,msize);
+  let src = cv.matFromImageData(lastImage);
+  let gray = new cv.Mat();
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+  let faces = new cv.RectVector();
+  let size = new cv.Size(0,0);
+  faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, size, size);
 
   thumbs.innerHTML='';
+  if(faces.size()===0) alert('No faces detected');
+
   for(let i=0;i<faces.size();i++){
     let r=faces.get(i);
-    let faceMat=src.roi(r);
-    let c=document.createElement('canvas');c.width=r.width;c.height=r.height;
-    let ictx=c.getContext('2d');
-    let imgData=new ImageData(new Uint8ClampedArray(faceMat.data),faceMat.cols,faceMat.rows);
+    let faceMat = src.roi(r);
+    let c=document.createElement('canvas');
+    c.width = r.width; c.height = r.height;
+    let ictx = c.getContext('2d');
+    let imgData = new ImageData(new Uint8ClampedArray(faceMat.data), faceMat.cols, faceMat.rows);
     ictx.putImageData(imgData,0,0);
-    let wrapper=document.createElement('div');wrapper.className='thumb';
-    let imgEl=document.createElement('img');imgEl.src=c.toDataURL('image/jpeg',0.9);
+    let wrapper=document.createElement('div'); wrapper.className='thumb';
+    let imgEl=document.createElement('img'); imgEl.src=c.toDataURL('image/jpeg',0.9);
     wrapper.appendChild(imgEl);
-    let a=document.createElement('a');a.href=imgEl.src;a.download='face_'+(i+1)+'.jpg';a.textContent='Download';
+    let a=document.createElement('a'); a.href=imgEl.src; a.download='face_'+(i+1)+'.jpg'; a.textContent='Download';
     wrapper.appendChild(a);
     thumbs.appendChild(wrapper);
     faceMat.delete();
   }
-  src.delete();gray.delete();faces.delete();
-  if(faces.size()===0)alert('No faces detected');
+
+  src.delete(); gray.delete(); faces.delete();
 }
 </script>
 </body>
