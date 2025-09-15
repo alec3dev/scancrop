@@ -3,23 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Multi-Photo / Document Extractor</title>
+<title>Advanced Photo/Document Extractor</title>
 <style>
-  body { font-family: sans-serif; margin: 12px; }
-  h1 { font-size: 20px; }
-  .row { display: flex; gap: 12px; flex-wrap: wrap; }
-  video, canvas { border: 1px solid #ccc; border-radius: 6px; }
-  #controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
-  button, input[type=file] { padding: 6px; border: 1px solid #888; border-radius: 6px; background: #f5f5f5; }
-  #thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-  .thumb { display: flex; flex-direction: column; align-items: center; padding: 6px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
-  .thumb img { max-width: 200px; max-height: 160px; margin-bottom: 4px; }
-  label { font-size: 12px; color: #444; }
+  body{font-family:sans-serif;margin:12px;background:#f8f9fa}
+  h1{font-size:20px;color:#333}
+  .row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  video,canvas{border:1px solid #ccc;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}
+  #controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  button,input[type=file]{padding:8px 12px;border:1px solid #888;border-radius:6px;background:#f5f5f5;cursor:pointer;transition:all 0.2s}
+  button:hover{background:#e9e9e9}
+  button:disabled{opacity:0.5;cursor:not-allowed}
+  #thumbs{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px}
+  .thumb{display:flex;flex-direction:column;align-items:center;padding:8px;border:1px solid #ddd;border-radius:6px;background:#fff;box-shadow:0 2px 4px rgba(0,0,0,0.1)}
+  .thumb img{max-width:200px;max-height:160px;margin-bottom:6px;border-radius:4px}
+  label{font-size:12px;color:#444}
+  .progress{width:100%;height:6px;background:#eee;border-radius:3px;margin:8px 0}
+  .progress-bar{height:100%;background:#4CAF50;border-radius:3px;width:0%;transition:width 0.3s}
+  .status{font-size:14px;margin:8px 0;color:#555}
 </style>
 </head>
 <body>
-<h1>Extract Rectangular Photos / Docs</h1>
-<p>Use camera or upload an image. Detected rectangles will appear with download links.</p>
+<h1>Advanced Rectangular Photo/Document Extractor</h1>
+<p>Use camera or upload an image. All detected rectangles will appear with download links.</p>
 
 <div class="row">
   <video id="video" width="480" height="360" autoplay playsinline></video>
@@ -34,16 +39,46 @@
   <button id="btnClear">Clear</button>
 </div>
 
+<div class="progress">
+  <div id="progressBar" class="progress-bar"></div>
+</div>
+<div id="status" class="status">Ready</div>
+
 <div id="thumbs"></div>
 
-<script src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady();" async></script>
 <script>
 let cvReady = false;
-cv['onRuntimeInitialized'] = () => { cvReady = true; console.log('OpenCV ready'); };
+let cvLoading = false;
+
+function onOpenCvReady() {
+  cvLoading = true;
+  // Handle OpenCV loading with a timeout
+  const checkCvReady = setInterval(() => {
+    if (cv && cv.getBuildInformation) {
+      clearInterval(checkCvReady);
+      cvReady = true;
+      cvLoading = false;
+      updateStatus('OpenCV loaded successfully');
+      console.log('OpenCV ready');
+    }
+  }, 100);
+  
+  // If OpenCV doesn't load in 10 seconds, show error
+  setTimeout(() => {
+    if (!cvReady) {
+      clearInterval(checkCvReady);
+      updateStatus('Error: OpenCV failed to load. Please refresh the page.', true);
+      cvLoading = false;
+    }
+  }, 10000);
+}
 
 const video = document.getElementById('video');
 const canvasPreview = document.getElementById('canvasPreview');
 const ctx = canvasPreview.getContext('2d');
+const progressBar = document.getElementById('progressBar');
+const statusEl = document.getElementById('status');
 let stream = null;
 let lastImage = null;
 
@@ -59,12 +94,18 @@ btnStart.onclick = async () => {
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
       stream = null; video.srcObject = null;
-      btnStart.textContent = 'Start Camera'; btnCapture.disabled = true; return;
+      btnStart.textContent = 'Start Camera'; btnCapture.disabled = true;
+      updateStatus('Camera stopped');
+      return;
     }
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
     video.srcObject = stream;
     btnStart.textContent = 'Stop Camera'; btnCapture.disabled = false;
-  } catch (e) { alert(e); }
+    updateStatus('Camera started - position your documents');
+  } catch (e) {
+    alert('Camera error: ' + e.message);
+    updateStatus('Camera error: ' + e.message, true);
+  }
 };
 
 btnCapture.onclick = () => {
@@ -72,7 +113,9 @@ btnCapture.onclick = () => {
   canvasPreview.height = video.videoHeight || 480;
   ctx.drawImage(video, 0, 0, canvasPreview.width, canvasPreview.height);
   lastImage = ctx.getImageData(0, 0, canvasPreview.width, canvasPreview.height);
-  btnProcess.disabled = false; thumbs.innerHTML = '';
+  btnProcess.disabled = false;
+  thumbs.innerHTML = '';
+  updateStatus('Image captured. Click Process to extract documents.');
 };
 
 fileInput.onchange = (e) => {
@@ -80,112 +123,242 @@ fileInput.onchange = (e) => {
   let file = e.target.files[0];
   let img = new Image();
   img.onload = () => {
-    canvasPreview.width = img.width; canvasPreview.height = img.height;
+    canvasPreview.width = img.width;
+    canvasPreview.height = img.height;
     ctx.drawImage(img, 0, 0);
     lastImage = ctx.getImageData(0, 0, img.width, img.height);
-    btnProcess.disabled = false; thumbs.innerHTML = '';
+    btnProcess.disabled = false;
+    thumbs.innerHTML = '';
+    updateStatus('Image loaded. Click Process to extract documents.');
+  };
+  img.onerror = () => {
+    updateStatus('Error loading image', true);
   };
   img.src = URL.createObjectURL(file);
 };
 
-btnClear.onclick = () => { thumbs.innerHTML = ''; lastImage = null; btnProcess.disabled = true; };
+btnClear.onclick = () => {
+  thumbs.innerHTML = '';
+  lastImage = null;
+  btnProcess.disabled = true;
+  updateStatus('Cleared. Ready for new image.');
+};
 
 btnProcess.onclick = () => {
-  if (!lastImage) return alert('Capture or upload first');
-  if (!cvReady) return alert('Wait for OpenCV to load');
+  if (!lastImage) return alert('Capture or upload an image first');
+  if (!cvReady) {
+    if (cvLoading) {
+      return alert('OpenCV is still loading. Please wait...');
+    }
+    return alert('OpenCV failed to load. Please refresh the page.');
+  }
   processImage();
 };
+
+function updateStatus(message, isError = false) {
+  statusEl.textContent = message;
+  statusEl.style.color = isError ? '#d32f2f' : '#555';
+}
+
+function updateProgress(percent) {
+  progressBar.style.width = percent + '%';
+}
 
 function distance(a, b) {
   let dx = a.x - b.x, dy = a.y - b.y;
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+function indexOfMin(arr) {
+  return arr.indexOf(Math.min(...arr));
+}
+
+function indexOfMax(arr) {
+  return arr.indexOf(Math.max(...arr));
+}
+
 function orderQuadPoints(pts) {
   let sum = pts.map(p => p.x + p.y), diff = pts.map(p => p.y - p.x);
-  let tl = pts[sum.indexOf(Math.min(...sum))];
-  let br = pts[sum.indexOf(Math.max(...sum))];
-  let tr = pts[diff.indexOf(Math.min(...diff))];
-  let bl = pts[diff.indexOf(Math.max(...diff))];
+  let tl = pts[indexOfMin(sum)], br = pts[indexOfMax(sum)];
+  let tr = pts[indexOfMin(diff)], bl = pts[indexOfMax(diff)];
   return [tl, tr, br, bl];
 }
 
+function sortContoursByPosition(items) {
+  items.sort((a, b) => {
+    if (Math.abs(a.centroid.y - b.centroid.y) > 20) return a.centroid.y - b.centroid.y;
+    return a.centroid.x - b.centroid.x;
+  });
+}
+
 function processImage() {
+  updateStatus('Processing image...');
+  updateProgress(10);
+  
   let src = cv.matFromImageData(lastImage);
   let gray = new cv.Mat();
   cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-  cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+  
+  updateProgress(30);
+  
+  // Apply multiple techniques to improve edge detection
+  let blurred = new cv.Mat();
+  cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+  
   let edged = new cv.Mat();
-  cv.Canny(gray, edged, 50, 150);
-
-  let contours = new cv.MatVector(), hier = new cv.Mat();
-  cv.findContours(edged, contours, hier, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-
-  thumbs.innerHTML = '';
+  cv.Canny(blurred, edged, 50, 150);
+  
+  updateProgress(50);
+  
+  // Improve edge connectivity
+  let kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+  cv.dilate(edged, edged, kernel, new cv.Point(-1, -1), 2);
+  cv.erode(edged, edged, kernel, new cv.Point(-1, -1), 1);
+  
+  updateProgress(70);
+  
+  let contours = new cv.MatVector();
+  let hier = new cv.Mat();
+  cv.findContours(edged, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+  
+  let found = [];
   for (let i = 0; i < contours.size(); i++) {
     let cnt = contours.get(i);
     let area = cv.contourArea(cnt);
-    if (area < 500) { cnt.delete(); continue; }
-
+    // Adjust area threshold based on image size
+    let minArea = (src.rows * src.cols) * 0.01; // 1% of image area
+    if (area < minArea) {
+      cnt.delete();
+      continue;
+    }
+    
     let peri = cv.arcLength(cnt, true);
     let approx = new cv.Mat();
     cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-
-    let dst;
-    if (approx.rows === 4) {
+    
+    // Accept both 4-sided shapes (rectangles) and shapes with more sides (to handle perspective)
+    if (approx.rows >= 4 && approx.rows <= 6) {
+      let m = cv.moments(cnt, false);
+      let cx = m.m10 / m.m00 || 0, cy = m.m01 / m.m00 || 0;
       let pts = [];
-      for (let j = 0; j < 4; j++) {
+      for (let j = 0; j < approx.rows; j++) {
         pts.push({ x: approx.intPtr(j, 0)[0], y: approx.intPtr(j, 0)[1] });
       }
-      let ordered = orderQuadPoints(pts);
-      let w = Math.max(distance(ordered[0], ordered[1]), distance(ordered[2], ordered[3]));
-      let h = Math.max(distance(ordered[1], ordered[2]), distance(ordered[3], ordered[0]));
-      let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-        ordered[0].x, ordered[0].y,
-        ordered[1].x, ordered[1].y,
-        ordered[2].x, ordered[2].y,
-        ordered[3].x, ordered[3].y
-      ]);
-      let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, w - 1, 0, w - 1, h - 1, 0, h - 1]);
-      let M = cv.getPerspectiveTransform(srcTri, dstTri);
-      dst = new cv.Mat();
-      cv.warpPerspective(src, dst, M, new cv.Size(w, h), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
-      srcTri.delete(); dstTri.delete(); M.delete();
+      found.push({ contour: cnt, approx: approx, centroid: { x: cx, y: cy }, pts: pts });
     } else {
-      let rect = cv.boundingRect(cnt);
-      dst = src.roi(rect);
+      approx.delete();
+      cnt.delete();
     }
-
-    // Create canvas and image element
+  }
+  
+  updateProgress(90);
+  
+  if (found.length === 0) {
+    updateStatus('No documents found. Try adjusting lighting or position.', true);
+    src.delete(); gray.delete(); blurred.delete(); edged.delete(); kernel.delete(); contours.delete(); hier.delete();
+    return;
+  }
+  
+  sortContoursByPosition(found);
+  thumbs.innerHTML = '';
+  updateStatus(`Found ${found.length} document(s)`);
+  
+  for (let k = 0; k < found.length; k++) {
+    // For shapes with more than 4 points, find the convex hull to simplify
+    let pts = found[k].pts;
+    if (pts.length > 4) {
+      let points = new cv.Mat(pts.length, 1, cv.CV_32SC2);
+      for (let i = 0; i < pts.length; i++) {
+        points.intPtr(i, 0)[0] = pts[i].x;
+        points.intPtr(i, 0)[1] = pts[i].y;
+      }
+      let hull = new cv.Mat();
+      cv.convexHull(points, hull);
+      pts = [];
+      for (let i = 0; i < hull.rows; i++) {
+        pts.push({ x: hull.intPtr(i, 0)[0], y: hull.intPtr(i, 0)[1] });
+      }
+      points.delete(); hull.delete();
+    }
+    
+    // If we still have more than 4 points, take the 4 extreme points
+    if (pts.length > 4) {
+      let xs = pts.map(p => p.x);
+      let ys = pts.map(p => p.y);
+      let minX = Math.min(...xs), maxX = Math.max(...xs);
+      let minY = Math.min(...ys), maxY = Math.max(...ys);
+      pts = [
+        { x: minX, y: minY },
+        { x: maxX, y: minY },
+        { x: maxX, y: maxY },
+        { x: minX, y: maxY }
+      ];
+    }
+    
+    let ordered = orderQuadPoints(pts);
+    let wA = distance(ordered[0], ordered[1]), wB = distance(ordered[2], ordered[3]);
+    let maxW = Math.max(wA, wB);
+    let hA = distance(ordered[1], ordered[2]), hB = distance(ordered[0], ordered[3]);
+    let maxH = Math.max(hA, hB);
+    
+    let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      ordered[0].x, ordered[0].y,
+      ordered[1].x, ordered[1].y,
+      ordered[2].x, ordered[2].y,
+      ordered[3].x, ordered[3].y
+    ]);
+    let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, 0,
+      maxW - 1, 0,
+      maxW - 1, maxH - 1,
+      0, maxH - 1
+    ]);
+    
+    let M = cv.getPerspectiveTransform(srcTri, dstTri);
+    let dst = new cv.Mat();
+    cv.warpPerspective(src, dst, M, new cv.Size(maxW, maxH), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
+    
+    // Show result
     let c = document.createElement('canvas');
     c.width = dst.cols;
     c.height = dst.rows;
     let ictx = c.getContext('2d');
     let imgData = new ImageData(new Uint8ClampedArray(dst.data), dst.cols, dst.rows);
     ictx.putImageData(imgData, 0, 0);
-
-    // Create wrapper and download link
+    
     let wrapper = document.createElement('div');
     wrapper.className = 'thumb';
+    
     let imgEl = document.createElement('img');
     imgEl.src = c.toDataURL('image/jpeg', 0.9);
     wrapper.appendChild(imgEl);
+    
+    let label = document.createElement('label');
+    label.textContent = `Document ${k + 1} (${dst.cols}×${dst.rows})`;
+    wrapper.appendChild(label);
+    
     let a = document.createElement('a');
     a.href = imgEl.src;
-    a.download = 'crop_' + (i + 1) + '.jpg';
+    a.download = `document_${k + 1}.jpg`;
     a.textContent = 'Download';
     wrapper.appendChild(a);
-
-    // Append to thumbs container
+    
     thumbs.appendChild(wrapper);
-
-    dst.delete(); approx.delete(); cnt.delete();
+    
+    // Clean up
+    srcTri.delete(); dstTri.delete(); M.delete(); dst.delete();
   }
-
+  
   // Final cleanup
-  src.delete(); gray.delete(); edged.delete(); contours.delete(); hier.delete();
+  src.delete(); gray.delete(); blurred.delete(); edged.delete(); kernel.delete(); contours.delete(); hier.delete();
+  for (let f of found) {
+    f.contour.delete();
+    f.approx.delete();
+  }
+  
+  updateProgress(100);
+  setTimeout(() => updateProgress(0), 1000);
 }
-
 </script>
 </body>
 </html>
