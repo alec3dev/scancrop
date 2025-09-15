@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<script async src="https://docs.opencv.org/4.x/opencv.js" type="text/javascript"></script>
+
+<body>
+  <video id="videoInput" width="640" height="480" autoplay></video>
+  <canvas id="canvasOutput" width="640" height="480"></canvas>
+</body>
+
+<script>
+cv['onRuntimeInitialized'] = () => {
+  let video = document.getElementById('videoInput');
+  let cap = new cv.VideoCapture(video);
+  let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+  let gray = new cv.Mat();
+  let blurred = new cv.Mat();
+  let edges = new cv.Mat();
+  let contours = new cv.MatVector();
+  let hierarchy = new cv.Mat();
+
+  function processVideo() {
+    cap.read(src);
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+    cv.Canny(blurred, edges, 75, 200);
+
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    let maxArea = 0;
+    let bestContour = null;
+
+    for (let i = 0; i < contours.size(); ++i) {
+      let cnt = contours.get(i);
+      let approx = new cv.Mat();
+      cv.approxPolyDP(cnt, approx, 0.02 * cv.arcLength(cnt, true), true);
+
+      if (approx.rows === 4 && cv.contourArea(approx) > maxArea) {
+        maxArea = cv.contourArea(approx);
+        bestContour = approx;
+      } else {
+        approx.delete();
+      }
+      cnt.delete();
+    }
+
+    if (bestContour) {
+      let pts = [];
+      for (let i = 0; i < 4; i++) {
+        pts.push({ x: bestContour.intPtr(i, 0)[0], y: bestContour.intPtr(i, 0)[1] });
+      }
+
+      // Sort points to consistent order: TL, TR, BR, BL
+      pts.sort((a, b) => a.y - b.y);
+      let top = pts.slice(0, 2).sort((a, b) => a.x - b.x);
+      let bottom = pts.slice(2, 4).sort((a, b) => a.x - b.x);
+      let ordered = [top[0], top[1], bottom[1], bottom[0]];
+
+      let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, ordered.flatMap(p => [p.x, p.y]));
+      let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, 640, 0, 640, 480, 0, 480]);
+      let M = cv.getPerspectiveTransform(srcTri, dstTri);
+      let dst = new cv.Mat();
+      cv.warpPerspective(src, dst, M, new cv.Size(640, 480));
+
+      cv.imshow('canvasOutput', dst);
+
+      dst.delete(); M.delete(); srcTri.delete(); dstTri.delete(); bestContour.delete();
+    } else {
+      cv.imshow('canvasOutput', src);
+    }
+
+    requestAnimationFrame(processVideo);
+  }
+
+  requestAnimationFrame(processVideo);
+};
+</script>
+
+
+</html>
