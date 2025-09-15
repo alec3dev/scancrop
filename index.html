@@ -9,7 +9,7 @@
     h1{font-size:18px;margin:0 0 8px}
     .row{display:flex;gap:12px;flex-wrap:wrap}
     video,canvas{border-radius:6px;border:1px solid #ccc}
-    #controls{display:flex;gap:8px;align-items:center;margin:8px 0}
+    #controls{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
     button{padding:8px 10px;border-radius:6px;border:1px solid #888;background:#f5f5f5;cursor:pointer}
     #thumbs{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
     .thumb{display:flex;flex-direction:column;align-items:center;padding:6px;border:1px solid #ddd;border-radius:6px;background:#fff}
@@ -21,7 +21,7 @@
 </head>
 <body>
   <h1>Batch Document / Photo Scanner — single HTML file</h1>
-  <p>Point your camera at a group of rectangular papers/photos on a common background. Capture one photo, then press <strong>Process</strong> to detect, extract and download each rectangle.</p>
+  <p>Point your camera at a group of rectangular papers/photos on a common background or upload an existing image. Capture one photo or upload, then press <strong>Process</strong> to detect, extract and download each rectangle.</p>
 
   <div class="row">
     <video id="video" width="480" height="360" autoplay playsinline></video>
@@ -31,6 +31,7 @@
   <div id="controls">
     <button id="btnStart">Start Camera</button>
     <button id="btnCapture" disabled>Capture</button>
+    <input type="file" id="fileInput" accept="image/*">
     <button id="btnProcess" disabled>Process</button>
     <button id="btnClear">Clear</button>
     <label class="input"><small>Min area</small><input id="minArea" type="range" min="2000" max="200000" value="4000"></label>
@@ -41,7 +42,6 @@
 
   <script async src="https://docs.opencv.org/4.x/opencv.js" type="text/javascript"></script>
   <script>
-    // Wait for OpenCV to be ready
     let cvReady = false;
     let video = document.getElementById('video');
     let canvasPreview = document.getElementById('canvasPreview');
@@ -53,23 +53,22 @@
     const btnCapture = document.getElementById('btnCapture');
     const btnProcess = document.getElementById('btnProcess');
     const btnClear = document.getElementById('btnClear');
+    const fileInput = document.getElementById('fileInput');
     const thumbs = document.getElementById('thumbs');
     const minArea = document.getElementById('minArea');
     const eps = document.getElementById('eps');
 
-    function setStatus(s){ /* simple placeholder for future status */ }
+    function setStatus(s){ }
 
-    // OpenCV onRuntimeInitialized
     function onOpenCvReady(){
       cvReady = true;
       console.log('OpenCV loaded');
     }
-    // Hook into global
     window.onOpenCvReady = onOpenCvReady;
 
     btnStart.onclick = async ()=>{
       try{
-        if(stream) { // stop
+        if(stream) {
           stream.getTracks().forEach(t=>t.stop());
           stream = null;
           video.srcObject = null;
@@ -88,14 +87,27 @@
     }
 
     btnCapture.onclick = ()=>{
-      // draw current video frame to canvas
       canvasPreview.width = video.videoWidth || 640;
       canvasPreview.height = video.videoHeight || 480;
       ctx.drawImage(video,0,0,canvasPreview.width,canvasPreview.height);
       lastImage = ctx.getImageData(0,0,canvasPreview.width,canvasPreview.height);
       btnProcess.disabled = false;
       thumbs.innerHTML = '';
-      setStatus('Captured image');
+    }
+
+    fileInput.onchange = (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      const img = new Image();
+      img.onload = ()=>{
+        canvasPreview.width = img.width;
+        canvasPreview.height = img.height;
+        ctx.drawImage(img,0,0);
+        lastImage = ctx.getImageData(0,0,canvasPreview.width,canvasPreview.height);
+        btnProcess.disabled = false;
+        thumbs.innerHTML = '';
+      }
+      img.src = URL.createObjectURL(file);
     }
 
     btnClear.onclick = ()=>{
@@ -105,13 +117,12 @@
     }
 
     btnProcess.onclick = ()=>{
-      if(!lastImage) return alert('Capture an image first');
+      if(!lastImage) return alert('Capture or upload an image first');
       if(!cvReady) return alert('OpenCV not loaded yet — wait a second and try again');
       processImage();
     }
 
     function sortContoursByPosition(items){
-      // sort by y then x (top-to-bottom, left-to-right)
       items.sort((a,b)=>{
         let ay = a.centroid.y, by = b.centroid.y;
         if(Math.abs(ay-by) > 20) return ay - by;
@@ -120,9 +131,7 @@
     }
 
     function processImage(){
-      // Create mats
       let src = cv.matFromImageData(lastImage);
-      let origW = src.cols, origH = src.rows;
       let gray = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
       let blur = new cv.Mat();
@@ -130,12 +139,10 @@
       let edged = new cv.Mat();
       cv.Canny(blur, edged, 50, 150);
 
-      // dilate + erode to close gaps
       let kernel = cv.Mat.ones(3,3,cv.CV_8U);
       cv.dilate(edged, edged, kernel, new cv.Point(-1,-1), 1);
       cv.erode(edged, edged, kernel, new cv.Point(-1,-1), 1);
 
-      // find contours
       let contours = new cv.MatVector();
       let hierarchy = new cv.Mat();
       cv.findContours(edged, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
@@ -145,17 +152,14 @@
         let cnt = contours.get(i);
         let area = cv.contourArea(cnt);
         if(area < Number(minArea.value)) { cnt.delete(); continue; }
-        // approx polygon
         let peri = cv.arcLength(cnt, true);
         let approx = new cv.Mat();
         let epsFactor = Number(eps.value)/100.0;
         cv.approxPolyDP(cnt, approx, epsFactor * peri, true);
         if(approx.rows === 4){
-          // compute bounding rect and centroid
           let moments = cv.moments(cnt, false);
           let cx = moments.m10/moments.m00 || 0;
           let cy = moments.m01/moments.m00 || 0;
-          // collect points
           let pts = [];
           for(let j=0;j<4;j++){
             pts.push({x: approx.intPtr(j,0)[0], y: approx.intPtr(j,0)[1]});
@@ -169,21 +173,17 @@
 
       if(found.length === 0){
         alert('No rectangles found. Try reducing min area or increasing epsilon.');
-        // cleanup
         src.delete(); gray.delete(); blur.delete(); edged.delete(); contours.delete(); hierarchy.delete(); kernel.delete();
         return;
       }
 
-      // sort and extract
       sortContoursByPosition(found);
 
       thumbs.innerHTML = '';
 
       for(let k=0;k<found.length;k++){
         let f = found[k];
-        // order points consistently: top-left, top-right, bottom-right, bottom-left
         let ordered = orderQuadPoints(f.pts);
-        // compute width/height target
         let wA = distance(ordered[2], ordered[3]);
         let wB = distance(ordered[1], ordered[0]);
         let maxW = Math.max(wA, wB);
@@ -193,7 +193,6 @@
         maxW = Math.max(100, Math.round(maxW));
         maxH = Math.max(100, Math.round(maxH));
 
-        // src points
         let srcTri = cv.matFromArray(4,1,cv.CV_32FC2,[
           ordered[0].x, ordered[0].y,
           ordered[1].x, ordered[1].y,
@@ -212,11 +211,9 @@
         let dsize = new cv.Size(maxW, maxH);
         cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_REPLICATE);
 
-        // to dataURL and show
         let outCanvas = document.createElement('canvas');
         outCanvas.width = dst.cols; outCanvas.height = dst.rows;
         let outCtx = outCanvas.getContext('2d');
-        // convert mat to ImageData
         let img = new ImageData(new Uint8ClampedArray(dst.data), dst.cols, dst.rows);
         outCtx.putImageData(img,0,0);
 
@@ -233,17 +230,11 @@
 
         thumbs.appendChild(wrapper);
 
-        // cleanup per-item
         M.delete(); dst.delete(); srcTri.delete(); dstTri.delete();
-        // we'll delete contour/approx later
       }
 
-      // cleanup big mats
       src.delete(); gray.delete(); blur.delete(); edged.delete(); contours.delete(); hierarchy.delete(); kernel.delete();
-      // delete individual contour mats stored in found
       for(let f of found){ try{ f.contour.delete(); f.approx.delete(); } catch(e){} }
-
-      setStatus('Processing done.');
     }
 
     function distance(a,b){
@@ -251,8 +242,6 @@
     }
 
     function orderQuadPoints(pts){
-      // pts: array of 4 {x,y}
-      // compute sum and diff to get tl,tr,br,bl
       let sum = pts.map(p=>p.x+p.y);
       let diff = pts.map(p=>p.y - p.x);
       let tl = pts[indexOfMin(sum)];
