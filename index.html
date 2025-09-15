@@ -7,26 +7,38 @@
 <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 <style>
   body { font-family:sans-serif; padding:1rem; }
-  #preview, .crop { max-width:200px; margin:.5rem; border:1px solid #ccc; }
+  #annotatedCanvas, .crop { max-width:200px; margin:.5rem; border:1px solid #ccc; }
 </style>
 </head>
 <body>
 <h3>Select or Capture an Image</h3>
-<input type="file" id="fileInput" accept="image/*">
+<input type="file" id="fileInput" accept="image/*"><br><br>
 <video id="videoInput" width="320" height="240" autoplay></video>
 <button id="snap">Capture</button>
-<canvas id="canvasInput" style="display:none;"></canvas>
 
+<canvas id="canvasInput" style="display:none;"></canvas><br>
 <button id="processBtn" disabled>Process</button>
+
 <h4>Annotated:</h4>
-<img id="preview">
+<canvas id="annotatedCanvas"></canvas>
 
 <h4>Cropped photos:</h4>
 <div id="crops"></div>
 
 <script>
-let cvReady=false;
-cv['onRuntimeInitialized']=()=>{cvReady=true;document.getElementById('processBtn').disabled=false;console.log('OpenCV loaded');};
+let cvReady = false;
+cv['onRuntimeInitialized'] = () => {
+  cvReady = true;
+  console.log('OpenCV ready');
+  enableProcessIfReady();
+};
+
+function enableProcessIfReady() {
+  const c = document.getElementById('canvasInput');
+  if (cvReady && c.width>0 && c.height>0) {
+    document.getElementById('processBtn').disabled = false;
+  }
+}
 
 // camera preview
 navigator.mediaDevices.getUserMedia({video:true}).then(stream=>{
@@ -39,22 +51,23 @@ document.getElementById('snap').onclick=()=>{
   c.width=video.videoWidth;
   c.height=video.videoHeight;
   c.getContext('2d').drawImage(video,0,0);
+  enableProcessIfReady();
 };
 
 // upload file
-let uploaded=null;
 document.getElementById('fileInput').onchange=e=>{
   const file=e.target.files[0];
   const reader=new FileReader();
   reader.onload=ev=>{
-    uploaded=new Image();
-    uploaded.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
       const c=document.getElementById('canvasInput');
-      c.width=uploaded.width;
-      c.height=uploaded.height;
-      c.getContext('2d').drawImage(uploaded,0,0);
+      c.width=img.width;
+      c.height=img.height;
+      c.getContext('2d').drawImage(img,0,0);
+      enableProcessIfReady();
     };
-    uploaded.src=ev.target.result;
+    img.src=ev.target.result;
   };
   reader.readAsDataURL(file);
 };
@@ -62,6 +75,8 @@ document.getElementById('fileInput').onchange=e=>{
 document.getElementById('processBtn').onclick=()=>{
   if(!cvReady){alert('OpenCV not loaded yet');return;}
   const c=document.getElementById('canvasInput');
+  if(c.width===0){alert('No image loaded');return;}
+
   const src=cv.imread(c);
   const gray=new cv.Mat();
   cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY,0);
@@ -70,7 +85,6 @@ document.getElementById('processBtn').onclick=()=>{
   const edges=new cv.Mat();
   cv.Canny(blurred,edges,50,150);
 
-  // find contours
   const contours=new cv.MatVector();
   const hierarchy=new cv.Mat();
   cv.findContours(edges,contours,hierarchy,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
@@ -85,13 +99,12 @@ document.getElementById('processBtn').onclick=()=>{
     const approx=new cv.Mat();
     cv.approxPolyDP(cnt,approx,0.02*peri,true);
 
-    if(approx.rows===4){ // rectangle
+    if(approx.rows===4){
       const area=cv.contourArea(approx);
-      if(area>5000){ // ignore tiny noise
-        // perspective warp
+      if(area>3000){
+        // order corners
         let pts=[];
         for(let j=0;j<4;j++){pts.push({x:approx.intAt(j,0),y:approx.intAt(j,1)});}
-        // sort points to tl,tr,br,bl
         pts.sort((a,b)=>a.y-b.y);
         let top=pts.slice(0,2).sort((a,b)=>a.x-b.x);
         let bot=pts.slice(2).sort((a,b)=>a.x-b.x);
@@ -107,12 +120,10 @@ document.getElementById('processBtn').onclick=()=>{
            ordered[1].x,ordered[1].y,
            ordered[2].x,ordered[2].y,
            ordered[3].x,ordered[3].y]);
-        let dstTri=cv.matFromArray(4,1,cv.CV_32FC2,
-          [0,0,w,0,w,h,0,h]);
+        let dstTri=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,w,0,w,h,0,h]);
         let M=cv.getPerspectiveTransform(srcTri,dstTri);
         let dst=new cv.Mat();
-        let dsize=new cv.Size(w,h);
-        cv.warpPerspective(src,dst,M,dsize,cv.INTER_LINEAR,cv.BORDER_REPLICATE);
+        cv.warpPerspective(src,dst,M,new cv.Size(w,h),cv.INTER_LINEAR,cv.BORDER_REPLICATE);
 
         // draw rectangle on annotated
         cv.polylines(annotated,approx,true,new cv.Scalar(255,0,0,255),3);
@@ -129,7 +140,10 @@ document.getElementById('processBtn').onclick=()=>{
     cnt.delete();approx.delete();
   }
 
-  cv.imshow('preview',annotated);
+  // show annotated
+  const annotatedCanvas=document.getElementById('annotatedCanvas');
+  cv.imshow(annotatedCanvas,annotated);
+
   // clean up
   src.delete();gray.delete();blurred.delete();edges.delete();contours.delete();hierarchy.delete();annotated.delete();
 };
