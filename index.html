@@ -20,6 +20,7 @@
 <body>
 <h1>Extract Faces</h1>
 <p>Use camera or upload an image. Detected faces will appear with download links.</p>
+<div id="errorMessage" style="display:none"></div>
 
 <div class="row">
   <video id="video" width="480" height="360" autoplay playsinline></video>
@@ -39,15 +40,19 @@
 <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 <script>
 let cvReady=false;
-cv['onRuntimeInitialized']=()=>{
-  cvReady=true; 
+cv['onRuntimeInitialized'] = () => {
   console.log('OpenCV ready');
-  // load face cascade
+  const utils = new Utils('errorMessage');
   window.faceCascade = new cv.CascadeClassifier();
-  let utils = new Utils('errorMessage');
-  utils.createFileFromUrl('haarcascade_frontalface_default.xml', 
-                          'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml', 
-                          ()=>{faceCascade.load('haarcascade_frontalface_default.xml');});
+  utils.createFileFromUrl(
+    'haarcascade_frontalface_default.xml',
+    'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml',
+    () => {
+      faceCascade.load('haarcascade_frontalface_default.xml');
+      console.log('Face cascade loaded');
+      if (lastImage) btnProcess.disabled = false; // enable button if an image is ready
+    }
+  );
 };
 
 const video=document.getElementById('video');
@@ -76,26 +81,30 @@ btnStart.onclick=async()=>{
   }catch(e){alert(e);}
 };
 
-btnCapture.onclick=()=>{
-  canvasPreview.width=video.videoWidth||640;
-  canvasPreview.height=video.videoHeight||480;
-  ctx.drawImage(video,0,0,canvasPreview.width,canvasPreview.height);
-  lastImage=ctx.getImageData(0,0,canvasPreview.width,canvasPreview.height);
-  btnProcess.disabled=false;thumbs.innerHTML='';
+btnCapture.onclick = () => {
+  canvasPreview.width = video.videoWidth || 640;
+  canvasPreview.height = video.videoHeight || 480;
+  ctx.drawImage(video, 0, 0, canvasPreview.width, canvasPreview.height);
+  lastImage = ctx.getImageData(0, 0, canvasPreview.width, canvasPreview.height);
+  if (faceCascade && faceCascade.empty() === false) btnProcess.disabled = false;
+  thumbs.innerHTML = '';
 };
 
-fileInput.onchange=(e)=>{
-  if(!e.target.files.length)return;
-  let file=e.target.files[0];
-  let img=new Image();
-  img.onload=()=>{
-    canvasPreview.width=img.width;canvasPreview.height=img.height;
-    ctx.drawImage(img,0,0);
-    lastImage=ctx.getImageData(0,0,img.width,img.height);
-    btnProcess.disabled=false;thumbs.innerHTML='';
+fileInput.onchange = (e) => {
+  if (!e.target.files.length) return;
+  let file = e.target.files[0];
+  let img = new Image();
+  img.onload = () => {
+    canvasPreview.width = img.width;
+    canvasPreview.height = img.height;
+    ctx.drawImage(img, 0, 0);
+    lastImage = ctx.getImageData(0, 0, img.width, img.height);
+    if (faceCascade && faceCascade.empty() === false) btnProcess.disabled = false;
+    thumbs.innerHTML = '';
   };
-  img.src=URL.createObjectURL(file);
+  img.src = URL.createObjectURL(file);
 };
+
 
 btnClear.onclick=()=>{thumbs.innerHTML='';lastImage=null;btnProcess.disabled=true;};
 
