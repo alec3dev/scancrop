@@ -2,183 +2,137 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Multi-Photo / Document Extractor</title>
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Multi-Photo Extractor</title>
+<script src="https://docs.opencv.org/4.x/opencv.js"></script>
 <style>
-  body{font-family:sans-serif;margin:12px}
-  h1{font-size:20px}
-  .row{display:flex;gap:12px;flex-wrap:wrap}
-  video,canvas{border:1px solid #ccc;border-radius:6px}
-  #controls{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
-  button,input[type=file]{padding:6px;border:1px solid #888;border-radius:6px;background:#f5f5f5}
-  #thumbs{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
-  .thumb{display:flex;flex-direction:column;align-items:center;padding:6px;border:1px solid #ddd;border-radius:6px;background:#fff}
-  .thumb img{max-width:200px;max-height:160px;margin-bottom:4px}
-  label{font-size:12px;color:#444}
+  body { font-family:sans-serif; padding:1rem; }
+  #preview, .crop { max-width:200px; margin:.5rem; border:1px solid #ccc; }
 </style>
 </head>
 <body>
-<h1>Extract Rectangular Photos / Docs</h1>
-<p>Use camera or upload an image. Detected rectangles will appear with download links.</p>
+<h3>Select or Capture an Image</h3>
+<input type="file" id="fileInput" accept="image/*">
+<video id="videoInput" width="320" height="240" autoplay></video>
+<button id="snap">Capture</button>
+<canvas id="canvasInput" style="display:none;"></canvas>
 
-<div class="row">
-  <video id="video" width="480" height="360" autoplay playsinline></video>
-  <canvas id="canvasPreview" width="480" height="360" style="display:none"></canvas>
-</div>
+<button id="processBtn" disabled>Process</button>
+<h4>Annotated:</h4>
+<img id="preview">
 
-<div id="controls">
-  <button id="btnStart">Start Camera</button>
-  <button id="btnCapture" disabled>Capture</button>
-  <input type="file" id="fileInput" accept="image/*">
-  <button id="btnProcess" disabled>Process</button>
-  <button id="btnClear">Clear</button>
-</div>
+<h4>Cropped photos:</h4>
+<div id="crops"></div>
 
-<div id="thumbs"></div>
-
-<script src="https://docs.opencv.org/4.x/opencv.js"></script>
 <script>
 let cvReady=false;
-cv['onRuntimeInitialized']=()=>{cvReady=true;console.log('OpenCV ready');};
+cv['onRuntimeInitialized']=()=>{cvReady=true;document.getElementById('processBtn').disabled=false;console.log('OpenCV loaded');};
 
-const video=document.getElementById('video');
-const canvasPreview=document.getElementById('canvasPreview');
-const ctx=canvasPreview.getContext('2d');
-let stream=null;
-let lastImage=null;
+// camera preview
+navigator.mediaDevices.getUserMedia({video:true}).then(stream=>{
+  document.getElementById('videoInput').srcObject=stream;
+});
 
-const btnStart=document.getElementById('btnStart');
-const btnCapture=document.getElementById('btnCapture');
-const btnProcess=document.getElementById('btnProcess');
-const btnClear=document.getElementById('btnClear');
-const fileInput=document.getElementById('fileInput');
-const thumbs=document.getElementById('thumbs');
-
-btnStart.onclick=async()=>{
-  try{
-    if(stream){
-      stream.getTracks().forEach(t=>t.stop());
-      stream=null;video.srcObject=null;
-      btnStart.textContent='Start Camera';btnCapture.disabled=true;return;
-    }
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-    video.srcObject=stream;
-    btnStart.textContent='Stop Camera';btnCapture.disabled=false;
-  }catch(e){alert(e);}
+document.getElementById('snap').onclick=()=>{
+  const video=document.getElementById('videoInput');
+  const c=document.getElementById('canvasInput');
+  c.width=video.videoWidth;
+  c.height=video.videoHeight;
+  c.getContext('2d').drawImage(video,0,0);
 };
 
-btnCapture.onclick=()=>{
-  canvasPreview.width=video.videoWidth||640;
-  canvasPreview.height=video.videoHeight||480;
-  ctx.drawImage(video,0,0,canvasPreview.width,canvasPreview.height);
-  lastImage=ctx.getImageData(0,0,canvasPreview.width,canvasPreview.height);
-  btnProcess.disabled=false;thumbs.innerHTML='';
-};
-
-fileInput.onchange=(e)=>{
-  if(!e.target.files.length)return;
-  let file=e.target.files[0];
-  let img=new Image();
-  img.onload=()=>{
-    canvasPreview.width=img.width;canvasPreview.height=img.height;
-    ctx.drawImage(img,0,0);
-    lastImage=ctx.getImageData(0,0,img.width,img.height);
-    btnProcess.disabled=false;thumbs.innerHTML='';
+// upload file
+let uploaded=null;
+document.getElementById('fileInput').onchange=e=>{
+  const file=e.target.files[0];
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    uploaded=new Image();
+    uploaded.onload=()=>{
+      const c=document.getElementById('canvasInput');
+      c.width=uploaded.width;
+      c.height=uploaded.height;
+      c.getContext('2d').drawImage(uploaded,0,0);
+    };
+    uploaded.src=ev.target.result;
   };
-  img.src=URL.createObjectURL(file);
+  reader.readAsDataURL(file);
 };
 
-btnClear.onclick=()=>{thumbs.innerHTML='';lastImage=null;btnProcess.disabled=true;};
+document.getElementById('processBtn').onclick=()=>{
+  if(!cvReady){alert('OpenCV not loaded yet');return;}
+  const c=document.getElementById('canvasInput');
+  const src=cv.imread(c);
+  const gray=new cv.Mat();
+  cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY,0);
+  const blurred=new cv.Mat();
+  cv.GaussianBlur(gray,blurred,new cv.Size(5,5),0,0,cv.BORDER_DEFAULT);
+  const edges=new cv.Mat();
+  cv.Canny(blurred,edges,50,150);
 
-btnProcess.onclick=()=>{
-  if(!lastImage)return alert('Capture or upload first');
-  if(!cvReady)return alert('Wait for OpenCV to load');
-  processImage();
-};
+  // find contours
+  const contours=new cv.MatVector();
+  const hierarchy=new cv.Mat();
+  cv.findContours(edges,contours,hierarchy,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
 
-function distance(a,b){let dx=a.x-b.x,dy=a.y-b.y;return Math.sqrt(dx*dx+dy*dy);}
-function indexOfMin(arr){return arr.indexOf(Math.min(...arr));}
-function indexOfMax(arr){return arr.indexOf(Math.max(...arr));}
-function orderQuadPoints(pts){
-  let sum=pts.map(p=>p.x+p.y),diff=pts.map(p=>p.y-p.x);
-  let tl=pts[indexOfMin(sum)],br=pts[indexOfMax(sum)];
-  let tr=pts[indexOfMin(diff)],bl=pts[indexOfMax(diff)];
-  return [tl,tr,br,bl];
-}
-function sortContoursByPosition(items){
-  items.sort((a,b)=>{
-    if(Math.abs(a.centroid.y-b.centroid.y)>20)return a.centroid.y-b.centroid.y;
-    return a.centroid.x-b.centroid.x;
-  });
-}
+  const cropsDiv=document.getElementById('crops');
+  cropsDiv.innerHTML='';
+  const annotated=src.clone();
 
-function processImage(){
-  let src=cv.matFromImageData(lastImage);
-  let hsv=new cv.Mat();cv.cvtColor(src,hsv,cv.COLOR_RGBA2RGB);cv.cvtColor(hsv,hsv,cv.COLOR_RGB2HSV);
-  // mask green background (adjust if needed)
-  let low=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[35,40,40,0]);
-  let high=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[85,255,255,255]);
-  let mask=new cv.Mat();cv.inRange(hsv,low,high,mask);
-  cv.bitwise_not(mask,mask); // invert, so paper area white
-
-  let edged=new cv.Mat();
-  cv.Canny(mask,edged,50,150);
-  let kernel=cv.Mat.ones(3,3,cv.CV_8U);
-  cv.dilate(edged,edged,kernel);cv.erode(edged,edged,kernel);
-
-  let contours=new cv.MatVector(),hier=new cv.Mat();
-  cv.findContours(edged,contours,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
-  let found=[];
   for(let i=0;i<contours.size();i++){
-    let cnt=contours.get(i);
-    let area=cv.contourArea(cnt);
-    if(area<2000){cnt.delete();continue;}
-    let peri=cv.arcLength(cnt,true);
-    let approx=new cv.Mat();
+    const cnt=contours.get(i);
+    const peri=cv.arcLength(cnt,true);
+    const approx=new cv.Mat();
     cv.approxPolyDP(cnt,approx,0.02*peri,true);
-    if(approx.rows===4){
-      let m=cv.moments(cnt,false);
-      let cx=m.m10/m.m00||0,cy=m.m01/m.m00||0;
-      let pts=[];
-      for(let j=0;j<4;j++)pts.push({x:approx.intPtr(j,0)[0],y:approx.intPtr(j,0)[1]});
-      found.push({contour:cnt,approx:approx,centroid:{x:cx,y:cy},pts:pts});
-    }else{approx.delete();cnt.delete();}
-  }
-  if(found.length===0){alert('No rectangles found');return;}
-  sortContoursByPosition(found);thumbs.innerHTML='';
 
-  for(let k=0;k<found.length;k++){
-    let ordered=orderQuadPoints(found[k].pts);
-    let wA=distance(ordered[2],ordered[3]),wB=distance(ordered[1],ordered[0]);
-    let maxW=Math.max(wA,wB);
-    let hA=distance(ordered[1],ordered[2]),hB=distance(ordered[0],ordered[3]);
-    let maxH=Math.max(hA,hB);
-    let srcTri=cv.matFromArray(4,1,cv.CV_32FC2,[
-      ordered[0].x,ordered[0].y,
-      ordered[1].x,ordered[1].y,
-      ordered[2].x,ordered[2].y,
-      ordered[3].x,ordered[3].y]);
-    let dstTri=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,maxW-1,0,maxW-1,maxH-1,0,maxH-1]);
-    let M=cv.getPerspectiveTransform(srcTri,dstTri);
-    let dst=new cv.Mat();
-    cv.warpPerspective(src,dst,M,new cv.Size(maxW,maxH),cv.INTER_LINEAR,cv.BORDER_REPLICATE);
-    // show result
-    let c=document.createElement('canvas');c.width=dst.cols;c.height=dst.rows;
-    let ictx=c.getContext('2d');
-    let imgData=new ImageData(new Uint8ClampedArray(dst.data),dst.cols,dst.rows);
-    ictx.putImageData(imgData,0,0);
-    let wrapper=document.createElement('div');wrapper.className='thumb';
-    let imgEl=document.createElement('img');imgEl.src=c.toDataURL('image/jpeg',0.9);
-    wrapper.appendChild(imgEl);
-    let a=document.createElement('a');a.href=imgEl.src;a.download='crop_'+(k+1)+'.jpg';a.textContent='Download';
-    wrapper.appendChild(a);
-    thumbs.appendChild(wrapper);
-    // clean per item
-    srcTri.delete();dstTri.delete();M.delete();dst.delete();
+    if(approx.rows===4){ // rectangle
+      const area=cv.contourArea(approx);
+      if(area>5000){ // ignore tiny noise
+        // perspective warp
+        let pts=[];
+        for(let j=0;j<4;j++){pts.push({x:approx.intAt(j,0),y:approx.intAt(j,1)});}
+        // sort points to tl,tr,br,bl
+        pts.sort((a,b)=>a.y-b.y);
+        let top=pts.slice(0,2).sort((a,b)=>a.x-b.x);
+        let bot=pts.slice(2).sort((a,b)=>a.x-b.x);
+        let ordered=[top[0],top[1],bot[1],bot[0]];
+        let w=Math.max(
+          Math.hypot(ordered[0].x-ordered[1].x,ordered[0].y-ordered[1].y),
+          Math.hypot(ordered[2].x-ordered[3].x,ordered[2].y-ordered[3].y));
+        let h=Math.max(
+          Math.hypot(ordered[0].x-ordered[3].x,ordered[0].y-ordered[3].y),
+          Math.hypot(ordered[1].x-ordered[2].x,ordered[1].y-ordered[2].y));
+        let srcTri=cv.matFromArray(4,1,cv.CV_32FC2,
+          [ordered[0].x,ordered[0].y,
+           ordered[1].x,ordered[1].y,
+           ordered[2].x,ordered[2].y,
+           ordered[3].x,ordered[3].y]);
+        let dstTri=cv.matFromArray(4,1,cv.CV_32FC2,
+          [0,0,w,0,w,h,0,h]);
+        let M=cv.getPerspectiveTransform(srcTri,dstTri);
+        let dst=new cv.Mat();
+        let dsize=new cv.Size(w,h);
+        cv.warpPerspective(src,dst,M,dsize,cv.INTER_LINEAR,cv.BORDER_REPLICATE);
+
+        // draw rectangle on annotated
+        cv.polylines(annotated,approx,true,new cv.Scalar(255,0,0,255),3);
+
+        // show crop
+        let cropCanvas=document.createElement('canvas');
+        cv.imshow(cropCanvas,dst);
+        cropCanvas.className='crop';
+        cropsDiv.appendChild(cropCanvas);
+
+        dst.delete();M.delete();srcTri.delete();dstTri.delete();
+      }
+    }
+    cnt.delete();approx.delete();
   }
-  src.delete();hsv.delete();low.delete();high.delete();mask.delete();edged.delete();kernel.delete();contours.delete();hier.delete();
-  for(let f of found){f.contour.delete();f.approx.delete();}
-}
+
+  cv.imshow('preview',annotated);
+  // clean up
+  src.delete();gray.delete();blurred.delete();edges.delete();contours.delete();hierarchy.delete();annotated.delete();
+};
 </script>
 </body>
 </html>
